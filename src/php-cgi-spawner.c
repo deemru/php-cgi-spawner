@@ -16,6 +16,8 @@ __forceinline void memzero( void * mem, size_t size ) // anti memset
 #define MAX_SPAWN_HANDLES 256
 
 __forceinline void spawner( char * app, unsigned port, unsigned cgis )
+// based on spawn-fcgi-win32.c
+// found here: http://redmine.lighttpd.net/boards/2/topics/686#message-689
 {
     SOCKET s;
 
