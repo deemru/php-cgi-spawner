@@ -1,9 +1,9 @@
 ## php-cgi-spawner
 
-Introducing the smallest and easiest way to spawn a multiple php-cgi in Windows for your nginx with fastcgi.
+It is the smallest (less than 4kb) and the easiest way to spawn a multiple php-cgi proccesses in Windows for your nginx server with fastcgi.
 
-- It spawns as many php-cgi on a chosen port as you need.
-- It automatically restarts them if they crashed by any reason.
+- It spawns as many php-cgi on a port as you need.
+- It automatically restarts them if they crashed.
 
 ## Build
 
