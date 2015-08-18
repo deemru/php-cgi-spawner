@@ -13,7 +13,7 @@ __forceinline void memzero( void * mem, size_t size ) // anti memset
     while( size );
 }
 
-#define MAX_SPAWN_HANDLES 256
+#define MAX_SPAWN_HANDLES MAXIMUM_WAIT_OBJECTS
 
 __forceinline void spawner( char * app, unsigned port, unsigned cgis )
 // based on spawn-fcgi-win32.c
@@ -58,6 +58,10 @@ __forceinline void spawner( char * app, unsigned port, unsigned cgis )
     }
 
     if( -1 == listen( s, SOMAXCONN ) )
+        return;
+
+    // close prior to cgis (msdn: All processes start at shutdown level 0x280)
+    if( !SetProcessShutdownParameters( 0x380, SHUTDOWN_NORETRY ) )
         return;
 
     {
