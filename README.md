@@ -18,7 +18,3 @@ Go to [src](src) directory and run [make.bat](src/make.bat) in a Visual Studio e
 # Notice
 
 Currently a maximum number of php-cgi processes is 64 because of MAXIMUM_WAIT_OBJECTS in WaitForMultipleObjects
-
-# Example
-
-The [example](example) directory contains scripts to [run](example/_php-cgi-nginx-restart.bat) and [stop](example/_php-cgi-nginx-stop.bat) your web server
