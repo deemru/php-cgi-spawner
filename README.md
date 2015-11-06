@@ -5,6 +5,7 @@
 
 - It spawns as many php-cgi on a port as you need
 - It automatically restarts them if they crashed
+- Example of 4 php-cgi on tcp/9000: php-cgi-spawner.exe php\php-cgi.exe 9000 4
 
 # Download
 
