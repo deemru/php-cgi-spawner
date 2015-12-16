@@ -46,4 +46,3 @@ Go to [src](src) directory and run [make.bat](src/make.bat) in a Visual Studio e
 ## Notes
 
 - Currently a maximum number of php-cgi processes is 64 because of `MAXIMUM_WAIT_OBJECTS` in `WaitForMultipleObjects`.
-- Thread safe (`_ts`) version of PHP should be used.
