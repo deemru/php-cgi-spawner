@@ -20,17 +20,13 @@ php
 In order to spawn 4 php-cgi on tcp/9000:
 
 ```
-cd php
-../php-cgi-spawner.exe php-cgi.exe 9000 4
-cd ..
+php-cgi-spawner.exe php/php-cgi.exe 9000 4
 ```
-
-It's important to be in `php-cgi.exe` directory else it won't pick up `php.ini`.
 
 As an alternative you may specify config file explicitly:
 
 ```
-php-cgi-spawner.exe "php/php-cgi.exe -c php/php.ini" 9000 4
+php-cgi-spawner.exe "php/php-cgi.exe -c php7.ini" 9000 4
 ```
 
 `php-cgi` are spawned under the same user that runs `php-cgi-spawner.exe`.
