@@ -3,7 +3,7 @@
 
 [php-cgi-spawner](https://github.com/deemru/php-cgi-spawner) is the smallest and easiest application to spawn a multiple php-cgi processes in Windows for your web server with FastCGI.
 
-- It spawns as many php-cgi on a signle port as you need.
+- It spawns as many php-cgi (x86 or x64) on a single port as you need.
 - It automatically restarts them if they crashed.
 
 ## Usage
@@ -23,13 +23,13 @@ In order to spawn 4 php-cgi on tcp/9000:
 php-cgi-spawner.exe php/php-cgi.exe 9000 4
 ```
 
-As an alternative you may specify config file explicitly:
+You may specify a config file explicitly:
 
 ```
-php-cgi-spawner.exe "php/php-cgi.exe -c php7.ini" 9000 4
+php-cgi-spawner.exe "php/php-cgi.exe -c php/php.ini" 9000 4
 ```
 
-`php-cgi` are spawned under the same user that runs `php-cgi-spawner.exe`.
+`php-cgi.exe` are spawned under the same user that runs `php-cgi-spawner.exe`.
 
 ## Download
 
