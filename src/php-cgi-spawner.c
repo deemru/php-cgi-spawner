@@ -1,23 +1,20 @@
-#include <ws2tcpip.h>
+#include <winsock.h>
 
 #pragma comment( lib, "kernel32.lib")
 #pragma comment( lib, "ws2_32.lib")
-#pragma warning( disable: 4701 )
 
 __forceinline void memzero( void * mem, size_t size ) // anti memset
 {
-    do
-    {
-        ( (volatile char *)mem )[--size] = 0;
-    }
-    while( size );
+    while( size-- )
+        ( (volatile char *)mem )[size] = 0;
 }
 
 #define MAX_SPAWN_HANDLES MAXIMUM_WAIT_OBJECTS
 
-__forceinline void spawner( char * app, unsigned port, unsigned cgis )
 // based on spawn-fcgi-win32.c
 // found here: http://redmine.lighttpd.net/boards/2/topics/686#message-689
+__forceinline void spawner( char * app, unsigned port, unsigned cgis,
+                            unsigned restart_delay )
 {
     SOCKET s;
 
@@ -52,7 +49,7 @@ __forceinline void spawner( char * app, unsigned port, unsigned cgis )
                 return;
         }
 
-        if( -1 == bind( s, (struct sockaddr *)&fcgi_addr_in,
+        if( -1 == bind( s, ( struct sockaddr * )&fcgi_addr_in,
                         sizeof( fcgi_addr_in ) ) )
             return;
     }
@@ -64,13 +61,17 @@ __forceinline void spawner( char * app, unsigned port, unsigned cgis )
     if( !SetProcessShutdownParameters( 0x380, SHUTDOWN_NORETRY ) )
         return;
 
+    // php-cgis crash silently if restart delay is 1 second or more
+    // (https://github.com/deemru/php-cgi-spawner/issues/3)
+    if( restart_delay >= 1000 )
+        SetErrorMode( SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX );
+
     {
         HANDLE hProcesses[MAX_SPAWN_HANDLES];
         PROCESS_INFORMATION pi;
         STARTUPINFOA si;
         unsigned i;
 
-        memzero( hProcesses, sizeof( hProcesses ) );
         memzero( &si, sizeof( si ) );
 
         si.cb = sizeof( STARTUPINFO );
@@ -79,13 +80,30 @@ __forceinline void spawner( char * app, unsigned port, unsigned cgis )
         si.hStdError = INVALID_HANDLE_VALUE;
         si.hStdInput = (HANDLE)s;
 
+        for( i = 0; i < cgis; i++ )
+            hProcesses[i] = INVALID_HANDLE_VALUE;
+
         for( ;; )
         {
-            BOOL isSpawnNeed = FALSE;
+            for( i = 0; i < cgis; i++ )
+            {
+                if( hProcesses[i] == INVALID_HANDLE_VALUE )
+                {
+                    if( !CreateProcessA( NULL, app, NULL, NULL, TRUE,
+                        CREATE_NO_WINDOW, NULL, NULL,
+                        &si, &pi ) )
+                        return;
+
+                    CloseHandle( pi.hThread );
+                    hProcesses[i] = pi.hProcess;
+                }
+            }
+
+            WaitForMultipleObjects( cgis, &hProcesses[0], FALSE, INFINITE );
 
             for( i = 0; i < cgis; i++ )
             {
-                if( hProcesses[i] != NULL )
+                if( hProcesses[i] != INVALID_HANDLE_VALUE )
                 {
                     DWORD dwExitCode;
                     if( !GetExitCodeProcess( hProcesses[i], &dwExitCode ) )
@@ -94,34 +112,15 @@ __forceinline void spawner( char * app, unsigned port, unsigned cgis )
                     if( dwExitCode != STILL_ACTIVE )
                     {
                         CloseHandle( hProcesses[i] );
-                        hProcesses[i] = NULL;
-                        isSpawnNeed = TRUE;
-                    }
-                }
-                else
-                {
-                    isSpawnNeed = TRUE;
-                }
-            }
-
-            if( isSpawnNeed )
-            {
-                for( i = 0; i < cgis; i++ )
-                {
-                    if( hProcesses[i] == NULL )
-                    {
-                        if( !CreateProcessA( NULL, app, NULL, NULL, TRUE,
-                                             CREATE_NO_WINDOW, NULL, NULL,
-                                             &si, &pi ) )
-                            return;
-
-                        CloseHandle( pi.hThread );
-                        hProcesses[i] = pi.hProcess;
+                        hProcesses[i] = INVALID_HANDLE_VALUE;
                     }
                 }
             }
 
-            WaitForMultipleObjects( cgis, &hProcesses[0], FALSE, INFINITE );
+            // optional restart delay
+            // (https://github.com/deemru/php-cgi-spawner/issues/3)
+            if( restart_delay )
+                Sleep( restart_delay );
         }
     }
 }
@@ -210,14 +209,19 @@ __forceinline unsigned getargs( char * cmd, char ** argv, unsigned max )
     return argc;
 }
 
-#define ARGS_COUNT 4
+#define ARGS_MAX 5
+#define ARGS_MIN 4
 
 void __cdecl WinMainCRTStartup()
 {
-    char * argv[ARGS_COUNT];
+    char * argv[ARGS_MAX];
+    argv[4] = NULL;
 
-    if( ARGS_COUNT == getargs( GetCommandLineA(), (char **)&argv, ARGS_COUNT ) )
-        spawner( argv[1], char2num( argv[2] ), char2num( argv[3] ) );
+    if( ARGS_MIN <= getargs( GetCommandLineA(), (char **)&argv, ARGS_MAX ) )
+    {
+        spawner( argv[1], char2num( argv[2] ), char2num( argv[3] ),
+                 argv[4] ? char2num( argv[4] ) : 0 );
+    }
 
     ExitProcess( 0 );
 }
