@@ -1,4 +1,5 @@
 #include <winsock.h>
+#include <TlHelp32.h>
 
 #pragma comment( lib, "kernel32.lib")
 #pragma comment( lib, "ws2_32.lib")
@@ -93,6 +94,47 @@ __forceinline void spawner( char * app, unsigned port, unsigned cgis,
                         CREATE_NO_WINDOW, NULL, NULL,
                         &si, &pi ) )
                         return;
+
+                    // close unnecessary conhost.exe
+                    // (https://github.com/deemru/php-cgi-spawner/issues/4)
+                    if( ( restart_delay >= 100 && restart_delay <= 200 ) ||
+                        ( restart_delay >= 1100 && restart_delay <= 1200 ) )
+                    {
+                        PROCESSENTRY32 pe32;
+                        HANDLE hSnap;
+
+                        Sleep( restart_delay );
+                        hSnap = CreateToolhelp32Snapshot( TH32CS_SNAPPROCESS,
+                                                          pi.dwProcessId );
+                        pe32.dwSize = sizeof( pe32 );
+
+                        if( hSnap != INVALID_HANDLE_VALUE )
+                        {
+                            if( Process32First( hSnap, &pe32 ) )
+                            do
+                            {
+                                if( pe32.th32ParentProcessID == pi.dwProcessId )
+                                {
+                                    HANDLE hCon;
+
+                                    hCon = OpenProcess( PROCESS_TERMINATE, 0,
+                                                        pe32.th32ProcessID );
+
+                                    if( hCon != INVALID_HANDLE_VALUE )
+                                    {
+                                        TerminateProcess( hCon,
+                                                          CONTROL_C_EXIT );
+                                        CloseHandle( hCon );
+                                    }
+
+                                    break;
+                                }
+                            }
+                            while( Process32Next( hSnap, &pe32 ) );
+
+                            CloseHandle( hSnap );
+                        }
+                    }
 
                     CloseHandle( pi.hThread );
                     hProcesses[i] = pi.hProcess;
