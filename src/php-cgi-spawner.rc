@@ -2,7 +2,7 @@
 
 2 ICON "php-cgi-spawner.ico"
 
-#define PCS_VERSION             1,16,03,31
+#define PCS_VERSION             1,17,01,19
 #define PCS_VERSION_STR         "8K\0"
 
 VS_VERSION_INFO VERSIONINFO

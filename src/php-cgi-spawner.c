@@ -1,173 +1,207 @@
+#define FD_SETSIZE 1
 #include <winsock.h>
-#include <TlHelp32.h>
 
 #pragma comment( lib, "kernel32.lib")
 #pragma comment( lib, "ws2_32.lib")
 
-__forceinline void memzero( void * mem, size_t size ) // anti memset
-{
-    while( size-- )
-        ( (volatile char *)mem )[size] = 0;
-}
-
 #define MAX_SPAWN_HANDLES MAXIMUM_WAIT_OBJECTS
 
-// based on spawn-fcgi-win32.c
-// found here: http://redmine.lighttpd.net/boards/2/topics/686#message-689
-__forceinline void spawner( char * app, unsigned port, unsigned cgis,
-                            unsigned restart_delay )
+typedef struct _PHPSPWCTX
 {
     SOCKET s;
+    CRITICAL_SECTION cs;
+    char * cmd;
+    unsigned port;
+    unsigned fcgis;
+    unsigned helpers;
+    unsigned restart_delay;
+    char PHP_FCGI_MAX_REQUESTS[16];
+    char PHP_HELP_MAX_REQUESTS[16];
+    PROCESS_INFORMATION pi;
+    STARTUPINFOA si;
+    HANDLE hFCGIs[MAX_SPAWN_HANDLES];
+    unsigned helpers_delay;
+    volatile LONG helpers_running;
+} PHPSPWCTX;
 
-    if( cgis < 1 || cgis > MAX_SPAWN_HANDLES )
-        return;
+static PHPSPWCTX ctx;
 
+static void inline memsym( void * mem, size_t size, char sym )
+{
+    while( size-- )
+        ( (volatile char *)mem )[size] = sym;
+}
+
+static char spawn_fcgi( HANDLE * hFCGI, BOOL is_perm )
+{
+    char isok = 1;
+
+    EnterCriticalSection( &ctx.cs );
+
+    for( ;; )
     {
-        WSADATA wsaData;
-
-        if( WSAStartup( MAKEWORD( 2, 0 ), &wsaData ) )
-            return;
-    }
-
-    if( -1 == ( s = socket( AF_INET, SOCK_STREAM, 0 ) ) )
-        return;
-
-    {
-        struct sockaddr_in fcgi_addr_in;
-
-        fcgi_addr_in.sin_family = AF_INET;
-        fcgi_addr_in.sin_addr.s_addr = 0x0100007f; // 127.0.0.1
-        fcgi_addr_in.sin_port = htons( (unsigned short)port );
-
-        if( -1 == ( s = socket( AF_INET, SOCK_STREAM, 0 ) ) )
-            return;
-
+        // set correct PHP_FCGI_MAX_REQUESTS
         {
-            int opt = 1;
+            char * val;
 
-            if( setsockopt( s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt,
-                sizeof( opt ) ) < 0 )
-                return;
+            if( is_perm )
+                val = ctx.PHP_FCGI_MAX_REQUESTS;
+            else
+                val = ctx.PHP_HELP_MAX_REQUESTS;
+
+            if( val[0] == 0 )
+                val = NULL;
+
+            SetEnvironmentVariableA( "PHP_FCGI_MAX_REQUESTS", val );
         }
 
-        if( -1 == bind( s, ( struct sockaddr * )&fcgi_addr_in,
-                        sizeof( fcgi_addr_in ) ) )
-            return;
+        if( !CreateProcessA( NULL, ctx.cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW,
+                             NULL, NULL, &ctx.si, &ctx.pi ) )
+        {
+            isok = 0;
+            break;
+        }
+
+        CloseHandle( ctx.pi.hThread );
+        *hFCGI = ctx.pi.hProcess;
+        break;
     }
 
-    if( -1 == listen( s, SOMAXCONN ) )
-        return;
+    LeaveCriticalSection( &ctx.cs );
 
-    // close prior to cgis (msdn: All processes start at shutdown level 0x280)
-    if( !SetProcessShutdownParameters( 0x380, SHUTDOWN_NORETRY ) )
-        return;
+    return isok;
+}
 
-    // php-cgis crash silently if restart delay is 1 second or more
-    // (https://github.com/deemru/php-cgi-spawner/issues/3)
-    if( restart_delay >= 1000 )
-        SetErrorMode( SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX );
+static DWORD WINAPI helper_holder( HANDLE hFCGI )
+{
+    WaitForSingleObject( hFCGI, INFINITE );
+    CloseHandle( hFCGI );
+    InterlockedDecrement( &ctx.helpers_running );
+    return 0;
+}
 
+static DWORD WINAPI helpers_thread( void * unused )
+{
+    (void)unused;
+
+    struct timeval tv = { 0, 0 };
+    struct timeval * timeout;
+
+    for( ;; )
     {
-        HANDLE hProcesses[MAX_SPAWN_HANDLES];
-        PROCESS_INFORMATION pi;
-        STARTUPINFOA si;
-        unsigned i;
-
-        memzero( &si, sizeof( si ) );
-
-        si.cb = sizeof( STARTUPINFO );
-        si.dwFlags = STARTF_USESTDHANDLES;
-        si.hStdOutput = INVALID_HANDLE_VALUE;
-        si.hStdError = INVALID_HANDLE_VALUE;
-        si.hStdInput = (HANDLE)s;
-
-        for( i = 0; i < cgis; i++ )
-            hProcesses[i] = INVALID_HANDLE_VALUE;
+        DWORD dwTick = GetTickCount();
+        timeout = &tv;
 
         for( ;; )
         {
-            for( i = 0; i < cgis; i++ )
+            int err;
+
+            fd_set fs;
+            fs.fd_count = 1;
+            fs.fd_array[0] = ctx.s;
+
+            err = select( 0, &fs, NULL, NULL, timeout );
+
+            if( err == SOCKET_ERROR )
+                return 0;
+
+            if( timeout )
             {
-                if( hProcesses[i] == INVALID_HANDLE_VALUE )
+                if( err == 0 )
                 {
-                    if( !CreateProcessA( NULL, app, NULL, NULL, TRUE,
-                        CREATE_NO_WINDOW, NULL, NULL,
-                        &si, &pi ) )
-                        return;
-
-                    // close unnecessary conhost.exe
-                    // (https://github.com/deemru/php-cgi-spawner/issues/4)
-                    if( ( restart_delay >= 100 && restart_delay <= 200 ) ||
-                        ( restart_delay >= 1100 && restart_delay <= 1200 ) )
-                    {
-                        PROCESSENTRY32 pe32;
-                        HANDLE hSnap;
-
-                        Sleep( restart_delay );
-                        hSnap = CreateToolhelp32Snapshot( TH32CS_SNAPPROCESS,
-                                                          pi.dwProcessId );
-                        pe32.dwSize = sizeof( pe32 );
-
-                        if( hSnap != INVALID_HANDLE_VALUE )
-                        {
-                            if( Process32First( hSnap, &pe32 ) )
-                            do
-                            {
-                                if( pe32.th32ParentProcessID == pi.dwProcessId )
-                                {
-                                    HANDLE hCon;
-
-                                    hCon = OpenProcess( PROCESS_TERMINATE, 0,
-                                                        pe32.th32ProcessID );
-
-                                    if( hCon != INVALID_HANDLE_VALUE )
-                                    {
-                                        TerminateProcess( hCon,
-                                                          CONTROL_C_EXIT );
-                                        CloseHandle( hCon );
-                                    }
-
-                                    break;
-                                }
-                            }
-                            while( Process32Next( hSnap, &pe32 ) );
-
-                            CloseHandle( hSnap );
-                        }
-                    }
-
-                    CloseHandle( pi.hThread );
-                    hProcesses[i] = pi.hProcess;
+                    timeout = NULL;
+                    continue;
                 }
+
+                if( GetTickCount() - dwTick > ctx.helpers_delay )
+                    timeout = NULL;
             }
 
-            WaitForMultipleObjects( cgis, &hProcesses[0], FALSE, INFINITE );
+            if( err == 1 && timeout == NULL )
+                break;
 
-            for( i = 0; i < cgis; i++ )
-            {
-                if( hProcesses[i] != INVALID_HANDLE_VALUE )
-                {
-                    DWORD dwExitCode;
-                    if( !GetExitCodeProcess( hProcesses[i], &dwExitCode ) )
-                        return;
-
-                    if( dwExitCode != STILL_ACTIVE )
-                    {
-                        CloseHandle( hProcesses[i] );
-                        hProcesses[i] = INVALID_HANDLE_VALUE;
-                    }
-                }
-            }
-
-            // optional restart delay
-            // (https://github.com/deemru/php-cgi-spawner/issues/3)
-            if( restart_delay )
-                Sleep( restart_delay );
+            if( timeout )
+                Sleep( 1 );
         }
+
+        if( ctx.helpers_running >= (LONG)ctx.helpers )
+            continue;
+
+        InterlockedIncrement( &ctx.helpers_running );
+
+        {
+            HANDLE h;
+
+            if( !spawn_fcgi( &h, FALSE ) )
+                break;
+
+            h = CreateThread( NULL, 0, &helper_holder, h, 0, NULL );
+
+            if( h == NULL )
+                break;
+
+            CloseHandle( h );
+        }
+    }
+
+    return 0;
+}
+
+static void perma_thread( BOOL helpers )
+{
+    for( ;; )
+    {
+        unsigned i;
+
+        for( i = 0; i < ctx.fcgis; i++ )
+        {
+            if( ctx.hFCGIs[i] == INVALID_HANDLE_VALUE &&
+                !spawn_fcgi( &ctx.hFCGIs[i], TRUE ) )
+                return;
+        }
+
+        if( helpers )
+        {
+            HANDLE h;
+
+            h = CreateThread( NULL, 0, &helpers_thread, NULL, 0, NULL );
+
+            if( h == NULL )
+                return;
+
+            CloseHandle( h );
+            helpers = FALSE;
+        }
+
+        if( ctx.fcgis == 0 )
+            Sleep( INFINITE );
+
+        WaitForMultipleObjects( ctx.fcgis, ctx.hFCGIs, FALSE, INFINITE );
+
+        for( i = 0; i < ctx.fcgis; i++ )
+        {
+            if( ctx.hFCGIs[i] != INVALID_HANDLE_VALUE )
+            {
+                DWORD dwExitCode;
+                if( !GetExitCodeProcess( ctx.hFCGIs[i], &dwExitCode ) )
+                    return;
+
+                if( dwExitCode != STILL_ACTIVE )
+                {
+                    CloseHandle( ctx.hFCGIs[i] );
+                    ctx.hFCGIs[i] = INVALID_HANDLE_VALUE;
+                }
+            }
+        }
+
+        // optional restart delay
+        // https://github.com/deemru/php-cgi-spawner/issues/3
+        if( ctx.restart_delay )
+            Sleep( ctx.restart_delay );
     }
 }
 
-__forceinline unsigned char2num( char * str ) // no checks at all
+static unsigned char2num( char * str )
 {
     unsigned u = 0;
     char c;
@@ -178,10 +212,30 @@ __forceinline unsigned char2num( char * str ) // no checks at all
     return u;
 }
 
+static char * getshift( char * str, char sym )
+{
+    char c;
+
+    for( ;; )
+    {
+        c = *str;
+
+        if( c == 0 )
+            break;
+
+        if( c == sym )
+            return str;
+
+        str++;
+    }
+
+    return NULL;
+}
+
 #define IS_QUOTE( c ) ( c == '"' )
 #define IS_SPACE( c ) ( c == ' ' || c == '\t' )
 
-__forceinline unsigned getargs( char * cmd, char ** argv, unsigned max )
+static unsigned getargs( char * cmd, char ** argv, unsigned max )
 {
     char c;
     char is_begin = 0;
@@ -254,15 +308,102 @@ __forceinline unsigned getargs( char * cmd, char ** argv, unsigned max )
 #define ARGS_MAX 5
 #define ARGS_MIN 4
 
-void __cdecl WinMainCRTStartup()
+void __cdecl WinMainCRTStartup( void )
 {
     char * argv[ARGS_MAX];
     argv[4] = NULL;
 
-    if( ARGS_MIN <= getargs( GetCommandLineA(), (char **)&argv, ARGS_MAX ) )
+    for( ;; )
     {
-        spawner( argv[1], char2num( argv[2] ), char2num( argv[3] ),
-                 argv[4] ? char2num( argv[4] ) : 0 );
+        BOOL is_helpers = FALSE;
+
+        if( ARGS_MIN > getargs( GetCommandLineA(), (char **)&argv, ARGS_MAX ) )
+            break;
+
+        ctx.cmd = argv[1];
+        ctx.port = char2num( argv[2] );
+
+        // permanent fcgis + helpers count
+        {
+            char * helpers_shift = getshift( argv[3], '+' );
+
+            if( helpers_shift )
+            {
+                *helpers_shift = 0;
+
+                ctx.helpers = char2num( helpers_shift + 1 );
+                if( ctx.helpers )
+                    is_helpers = TRUE;
+            }
+        }
+
+        ctx.fcgis = char2num( argv[3] );
+        ctx.restart_delay = argv[4] ? char2num( argv[4] ) : 0;
+        ctx.helpers_delay = ctx.restart_delay ? ctx.restart_delay : 100;
+
+        if( ( ctx.fcgis < 1 && !is_helpers ) || ctx.fcgis > MAX_SPAWN_HANDLES )
+            break;
+
+        // SOCKET
+        {
+            WSADATA wsaData;
+            struct sockaddr_in fcgi_addr_in;
+            int opt = 1;
+
+            if( WSAStartup( MAKEWORD( 2, 0 ), &wsaData ) )
+                break;
+
+            if( -1 == ( ctx.s = socket( AF_INET, SOCK_STREAM, 0 ) ) )
+                break;
+
+            if( setsockopt( ctx.s, SOL_SOCKET, SO_REUSEADDR, 
+                            (const char *)&opt, sizeof( opt ) ) < 0 )
+                break;
+
+            fcgi_addr_in.sin_family = AF_INET;
+            fcgi_addr_in.sin_addr.s_addr = 0x0100007f; // 127.0.0.1
+            fcgi_addr_in.sin_port = htons( (unsigned short)ctx.port );
+
+            if( -1 == bind( ctx.s, ( struct sockaddr * )&fcgi_addr_in,
+                sizeof( fcgi_addr_in ) ) )
+                break;
+
+            if( -1 == listen( ctx.s, SOMAXCONN ) )
+                break;
+        }
+
+        // close before cgis (msdn: All processes start at shutdown level 0x280)
+        if( !SetProcessShutdownParameters( 0x380, SHUTDOWN_NORETRY ) )
+            break;
+
+        // php-cgi crash silently if restart delay is >= 1000 ms
+        // https://github.com/deemru/php-cgi-spawner/issues/3
+        if( ctx.restart_delay >= 1000 )
+            SetErrorMode( SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX );
+
+        InitializeCriticalSection( &ctx.cs );
+
+        ctx.PHP_FCGI_MAX_REQUESTS[0] = 0;
+        GetEnvironmentVariableA( "PHP_FCGI_MAX_REQUESTS",
+                                 ctx.PHP_FCGI_MAX_REQUESTS,
+                                 sizeof( ctx.PHP_FCGI_MAX_REQUESTS ) );
+
+        ctx.PHP_HELP_MAX_REQUESTS[0] = 0;
+        GetEnvironmentVariableA( "PHP_HELP_MAX_REQUESTS",
+                                 ctx.PHP_HELP_MAX_REQUESTS,
+                                 sizeof( ctx.PHP_HELP_MAX_REQUESTS ) );
+
+        memsym( &ctx.si, sizeof( ctx.si ), 0 );
+        ctx.si.cb = sizeof( STARTUPINFO );
+        ctx.si.dwFlags = STARTF_USESTDHANDLES;
+        ctx.si.hStdOutput = INVALID_HANDLE_VALUE;
+        ctx.si.hStdError = INVALID_HANDLE_VALUE;
+        ctx.si.hStdInput = (HANDLE)ctx.s;
+
+        memsym( ctx.hFCGIs, sizeof( ctx.hFCGIs ), -1 );
+
+        perma_thread( is_helpers );
+        break;
     }
 
     ExitProcess( 0 );
