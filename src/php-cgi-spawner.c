@@ -26,7 +26,7 @@ typedef struct _PHPSPWCTX
 
 static PHPSPWCTX ctx;
 
-static void inline memsym( void * mem, size_t size, char sym )
+static __forceinline void memsym( void * mem, size_t size, char sym )
 {
     while( size-- )
         ( (volatile char *)mem )[size] = sym;
@@ -82,10 +82,10 @@ static DWORD WINAPI helper_holder( HANDLE hFCGI )
 
 static DWORD WINAPI helpers_thread( void * unused )
 {
-    (void)unused;
-
     struct timeval tv = { 0, 0 };
     struct timeval * timeout;
+
+    (void)unused;
 
     for( ;; )
     {
