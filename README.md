@@ -44,14 +44,14 @@ It means that up to 16 `php-cgi` helpers can start automatically when 4 `php-cgi
 `PHP_FCGI_MAX_REQUESTS` for `php-cgi` helpers can be set in `PHP_HELP_MAX_REQUESTS`:
 
 ```
-set PHP_HELP_MAX_REQUESTS 100
+set PHP_HELP_MAX_REQUESTS=100
 php-cgi-spawner.exe "php/php-cgi.exe -c php/php.ini" 9000 4+16
 ```
 
 You can even do not use permanently running `php-cgi` and use just helpers, even with 1 request per helper:
 
 ```
-set PHP_HELP_MAX_REQUESTS 1
+set PHP_HELP_MAX_REQUESTS=1
 php-cgi-spawner.exe "php/php-cgi.exe -c php/php.ini" 9000 0+16
 ```
 
